@@ -1,43 +1,70 @@
 
-import time
 import pybullet as p
 import pybullet_data
 
-def main():
-    # Open PyBullet's graphical interface
-    client = p.connect(p.GUI)
 
-    if client < 0:
-        raise RuntimeError("Could not connect to PyBullet GUI")
+class SimulationWorld:
+    def __init__(self, gui=True):
+        self.client = p.connect(p.GUI if gui else p.DIRECT)
 
-    # Load built-in models
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
-    p.setGravity(0, 0, -9.81)
+        if self.client < 0:
+            raise RuntimeError("Could not connect to PyBullet")
 
-    # Add a ground plane
-    p.loadURDF("plane.urdf")
+        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        p.setGravity(0, 0, -9.81)
+        p.setTimeStep(1 / 240)
 
-    # Add a simple box
-    p.loadURDF(
-        "cube_small.urdf",
-        basePosition=[0, 0, 1]
-    )
+        p.loadURDF("plane.urdf")
 
-    # Set camera position
-    p.resetDebugVisualizerCamera(
-        cameraDistance=3,
-        cameraYaw=45,
-        cameraPitch=-30,
-        cameraTargetPosition=[0, 0, 0.5]
-    )
+        p.resetDebugVisualizerCamera(
+            cameraDistance=10,
+            cameraYaw=45,
+            cameraPitch=-25,
+            cameraTargetPosition=[0, 0, 2]
+        )
 
-    # Run simulation for 10 seconds
-    for _ in range(2400):
+    def create_uav(self, position):
+        """Create a simple hovering UAV represented by a blue box."""
+        collision = p.createCollisionShape(
+            p.GEOM_BOX,
+            halfExtents=[0.25, 0.25, 0.1]
+        )
+
+        visual = p.createVisualShape(
+            p.GEOM_BOX,
+            halfExtents=[0.25, 0.25, 0.1],
+            rgbaColor=[0.1, 0.3, 0.9, 1]
+        )
+
+        return p.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=collision,
+            baseVisualShapeIndex=visual,
+            basePosition=position
+        )
+
+    def create_projectile(self, position, radius=0.1):
+        """Create a red spherical projectile."""
+        collision = p.createCollisionShape(
+            p.GEOM_SPHERE,
+            radius=radius
+        )
+
+        visual = p.createVisualShape(
+            p.GEOM_SPHERE,
+            radius=radius,
+            rgbaColor=[0.9, 0.1, 0.1, 1]
+        )
+
+        return p.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=collision,
+            baseVisualShapeIndex=visual,
+            basePosition=position
+        )
+
+    def step(self):
         p.stepSimulation()
-        time.sleep(1 / 240)
 
-    p.disconnect()
-
-
-if __name__ == "__main__":
-    main()
+    def close(self):
+        p.disconnect(self.client)
