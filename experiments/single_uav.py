@@ -8,6 +8,11 @@ import pybullet as p
 
 from simulation.doppler import doppler_shift
 from simulation.world import SimulationWorld
+from simulation.acoustic_sensor import (
+    SAMPLE_RATE,
+    generate_trajectory_echo,
+    estimate_doppler
+)
 
 
 def main():
@@ -21,37 +26,38 @@ def main():
 
     world = SimulationWorld()
 
-    # Simulation parameters
     dt = 1 / 240
     duration = 3.0
     num_steps = int(duration / dt)
 
-    # UAV state (stationary for now)
     sensor_position = np.array([0.0, 0.0, 2.0])
     sensor_velocity = np.zeros(3)
 
-    # Projectile trajectory
     start_position = np.array([
         -5.0,
         0.0 if args.scenario == "hit" else 1.0,
         2.0
     ])
+
     velocity = np.array([3.0, 0.0, 0.0])
 
-    # Store ideal Doppler measurements
-    times = []
-    doppler_values = []
+    physics_times = []
+    projectile_positions = []
+    ideal_doppler = []
 
     collision_detected = False
 
     try:
-        uav = world.create_uav(sensor_position.tolist())
-        projectile = world.create_projectile(start_position.tolist())
+        uav = world.create_uav(
+            sensor_position.tolist()
+        )
+        projectile = world.create_projectile(
+            start_position.tolist()
+        )
 
         for step in range(num_steps):
             t = step * dt
 
-            # Prescribed constant-velocity trajectory
             position = start_position + velocity * t
 
             p.resetBasePositionAndOrientation(
@@ -60,64 +66,100 @@ def main():
                 [0, 0, 0, 1]
             )
 
-            # Update collision geometry
             p.performCollisionDetection()
 
-            # Check for collision
             contacts = p.getClosestPoints(
                 bodyA=uav,
                 bodyB=projectile,
                 distance=0
             )
 
-            if contacts and not collision_detected:
+            if contacts:
                 collision_detected = True
                 print(f"Collision detected at t={t:.2f}s")
+                break
 
-            # Calculate ideal Doppler shift
-            # Only record measurements before collision.
-            if not collision_detected:
-                shift = doppler_shift(
+            # Store the actual simulated trajectory.
+            physics_times.append(t)
+            projectile_positions.append(position.copy())
+
+            # Ground-truth reference for validation only.
+            ideal_doppler.append(
+                doppler_shift(
                     sensor_position=sensor_position,
                     sensor_velocity=sensor_velocity,
                     object_position=position,
-                    object_velocity=velocity,
+                    object_velocity=velocity
                 )
-
-                times.append(t)
-                doppler_values.append(shift)
+            )
 
             world.step()
             time.sleep(dt)
 
-        if not collision_detected:
-            print("No collision detected.")
-
     finally:
         world.close()
 
-    # Plot ideal Doppler measurements
-    plt.figure(figsize=(9, 5))
+    if not collision_detected:
+        print("No collision detected.")
+
+    physics_times = np.asarray(physics_times)
+    projectile_positions = np.asarray(
+        projectile_positions
+    )
+    ideal_doppler = np.asarray(ideal_doppler)
+
+    # Generate high-frequency microphone sampling times.
+    # Stop at the final valid physics sample.
+    audio_times = np.arange(
+        0,
+        physics_times[-1],
+        1 / SAMPLE_RATE
+    )
+
+    # Generate the acoustic echo from the trajectory.
+    echo = generate_trajectory_echo(
+        audio_times=audio_times,
+        physics_times=physics_times,
+        projectile_positions=projectile_positions,
+        sensor_position=sensor_position
+    )
+
+    # Recover Doppler shift from the audio.
+    measured_times, measured_doppler = estimate_doppler(
+        audio_times,
+        echo
+    )
+
+    # Plot both measurements.
+    plt.figure(figsize=(10, 5))
 
     plt.plot(
-        times,
-        doppler_values,
-        label=f"{args.scenario.upper()} scenario"
+        physics_times,
+        ideal_doppler,
+        label="Ideal Doppler (ground truth)",
+        linewidth=2
+    )
+
+    plt.plot(
+        measured_times,
+        measured_doppler,
+        label="Measured Doppler (microphone)",
+        linestyle="--",
+        linewidth=2
     )
 
     plt.axhline(
         0,
         color="gray",
-        linestyle="--",
+        linestyle=":",
         linewidth=1
     )
 
     plt.xlabel("Time (s)")
     plt.ylabel("Doppler shift (Hz)")
     plt.title(
-        f"Ideal Doppler Shift — {args.scenario.upper()} Scenario"
+        f"Ideal vs. Measured Doppler — {args.scenario.upper()}"
     )
-
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
