@@ -100,3 +100,40 @@ def estimate_initial_state(
     )
 
     return result
+
+
+# for EKF pre-work: try multistart init and see if that improves the inital estimate
+def estimate_initial_state_multistart(
+    times,
+    uav_positions,
+    measured_doppler,
+    n_starts=30,
+    position_bounds=(-5, 5),
+    velocity_bounds=(-5, 5),
+    seed=42,
+):
+    """
+    Run batch estimation from multiple random initial guesses.
+    Return the solution with the lowest residual cost.
+    """
+    rng = np.random.default_rng(seed)
+    best_result = None
+
+    for _ in range(n_starts):
+        initial_guess = np.concatenate([
+            rng.uniform(*position_bounds, size=3),
+            rng.uniform(*velocity_bounds, size=3),
+        ])
+
+        result = estimate_initial_state(
+            times,
+            uav_positions,
+            measured_doppler,
+            initial_guess,
+        )
+
+        if best_result is None or result.cost < best_result.cost:
+            best_result = result
+
+    return best_result
+
