@@ -2,64 +2,103 @@
 import numpy as np
 from scipy.optimize import least_squares
 
+SPEED_OF_SOUND = 343.0
+SPEAKER_FREQUENCY = 10000.0
+
+# 40 ms audio window, evaluated approximately at its center.
+DEFAULT_MEASUREMENT_LAG = 0.02
+
 
 def predict_doppler(
     state,
     times,
     uav_positions,
-    frequency=10000.0,
-    c=343.0
+    frequency=SPEAKER_FREQUENCY,
+    c=SPEED_OF_SOUND,
+    delay_aware=True,
+    measurement_lag=0.0,
 ):
     """
     Predict Doppler measurements for a constant-velocity target.
 
     state: [px, py, pz, vx, vy, vz] at t=0
-    times: shape (K,)
+    times: shape (K,), relative to the state reference time
     uav_positions: shape (N, 3)
+
+    times represent measurement availability timestamps.
+
+    measurement_lag shifts the effective acoustic observation
+    time earlier than the availability timestamp.
+
+    When delay_aware=True, solve separately for each UAV's
+    reflection time, accounting for acoustic propagation.
 
     Returns: shape (K, N)
 
-    Positive Doppler shift means the target is approaching.
+    Positive Doppler shift means approaching.
     """
+    state = np.asarray(state, dtype=float).reshape(6)
+    times = np.atleast_1d(
+        np.asarray(times, dtype=float)
+    )
+    uav_positions = np.asarray(
+        uav_positions, dtype=float
+    ).reshape(-1, 3)
+
     p0 = state[:3]
     v = state[3:]
 
-    # Target positions at each measurement time
+    # Effective acoustic observation time.
+    observation_times = times - measurement_lag
+
+    # One reflection time per UAV and observation.
+    reflection_times = np.broadcast_to(
+        observation_times[:, None],
+        (len(times), len(uav_positions)),
+    ).copy()
+
+    if delay_aware:
+        # Solve:
+        # t_observe = t_reflect + distance(t_reflect)/c
+        for _ in range(15):
+            positions = (
+                p0[None, None, :]
+                + reflection_times[..., None] * v
+            )
+
+            distances = np.linalg.norm(
+                positions - uav_positions[None, :, :],
+                axis=2,
+            )
+
+            reflection_times = (
+                observation_times[:, None]
+                - distances / c
+            )
+
     positions = (
-        p0[None, :]
-        + times[:, None] * v[None, :]
+        p0[None, None, :]
+        + reflection_times[..., None] * v
     )
 
-    # Vectors from each UAV to the target
     displacement = (
-        positions[:, None, :]
-        - uav_positions[None, :, :]
+        positions - uav_positions[None, :, :]
     )
 
-    distances = np.linalg.norm(
-        displacement,
-        axis=2
-    )
+    distances = np.linalg.norm(displacement, axis=2)
 
     directions = (
         displacement
         / np.maximum(distances[..., None], 1e-8)
     )
 
-    # Radial velocity:
-    # Positive = moving away
-    # Negative = approaching
+    # Positive radial velocity means moving away.
     radial_velocity = np.sum(
         directions * v[None, None, :],
-        axis=2
+        axis=2,
     )
 
-    # Exact Doppler formula for a moving reflector
-    # under constant radial motion.
-    #
-    # f_received = f_sent * (c - vr) / (c + vr)
-    #
-    # Doppler shift = f_received - f_sent
+    # Exact moving-reflector Doppler formula.
     return frequency * (
         (c - radial_velocity)
         / (c + radial_velocity)
@@ -72,12 +111,13 @@ def estimate_initial_state(
     uav_positions,
     measured_doppler,
     initial_guess,
-    frequency=10000.0,
-    c=343.0,
+    frequency=SPEAKER_FREQUENCY,
+    c=SPEED_OF_SOUND,
+    measurement_lag=DEFAULT_MEASUREMENT_LAG,
 ):
     """
     Estimate initial 3D position and velocity
-    from Doppler measurements.
+    from received Doppler measurements.
     """
 
     def residuals(state):
@@ -85,8 +125,10 @@ def estimate_initial_state(
             state,
             times,
             uav_positions,
-            frequency,
-            c
+            frequency=frequency,
+            c=c,
+            delay_aware=True,
+            measurement_lag=measurement_lag,
         )
 
         return (
@@ -102,7 +144,6 @@ def estimate_initial_state(
     return result
 
 
-# for EKF pre-work: try multistart init and see if that improves the inital estimate
 def estimate_initial_state_multistart(
     times,
     uav_positions,
@@ -111,9 +152,11 @@ def estimate_initial_state_multistart(
     position_bounds=(-5, 5),
     velocity_bounds=(-5, 5),
     seed=42,
+    measurement_lag=DEFAULT_MEASUREMENT_LAG,
 ):
     """
     Run batch estimation from multiple random initial guesses.
+
     Return the solution with the lowest residual cost.
     """
     rng = np.random.default_rng(seed)
@@ -130,10 +173,13 @@ def estimate_initial_state_multistart(
             uav_positions,
             measured_doppler,
             initial_guess,
+            measurement_lag=measurement_lag,
         )
 
-        if best_result is None or result.cost < best_result.cost:
+        if (
+            best_result is None
+            or result.cost < best_result.cost
+        ):
             best_result = result
 
     return best_result
-
