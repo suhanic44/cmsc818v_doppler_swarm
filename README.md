@@ -1,17 +1,24 @@
 ## Doppler Swarm: Lightweight Trajectory-Informed Collision Avoidance via Acoustic Sensing for Low-SWaP Multi-UAV Systems
-CMSC818V Term Research Project -- Gili Gordiyenko & Suhani Chaudhary 
+CMSC818V Term Research Project -- Gili Gordiyenko & Suhani Chaudhary
 
 ***Current Project State:***
-We run the full PyBullet simulation to record the ground-truth trajectories of the stationary UAVs and moving projectile, use those trajectories to generate synthetic acoustic signals, extract Doppler measurements from those signals, and feed all the measurements into our batch estimator to estimate the projectile’s initial 3D position and velocity
-- PyBullet: We simulate four stationary UAVs and a moving projectile, and record the projectile's trajectory.
-- Acoustic sensing: We use the projectile's movement to generate simulated microphone recordings, accounting for how long sound takes to travel to the projectile and reflect back.
-- Doppler extraction: We process those recordings to measure the frequency shifts caused by the projectile's movement.
-- Trajectory estimation: We combine Doppler measurements from all four UAVs and use least-squares optimization to estimate the projectile's initial position and velocity.
-- Results: In our initial test, we got approximately 11 cm position error and 0.06 m/s velocity error.
-- k-Wave: We also experimented with simulating actual sound waves reflecting off a sphere. We got reflections that changed with sphere position, but haven't integrated this into the main simulation yet.
+
+We've built and tested the acoustic sensing, trajectory estimation, collision prediction, and avoidance planning components. We can now estimate an incoming projectile's trajectory from simulated Doppler measurements and calculate how the UAVs should move to avoid it.
+
+- **PyBullet:** Simulate four stationary UAVs and a moving projectile.
+- **Acoustic sensing:** Generate simulated microphone recordings that account for sound travel and reflection time.
+- **Doppler extraction:** Process recordings to measure frequency shifts as the projectile moves.
+- **Trajectory estimation:** Use batch least-squares optimization to estimate the projectile's initial position and velocity, then continuously update the estimate using an EKF.
+- **Results:** Tested five projectile trajectories, achieving roughly 7–21 cm position RMSE and 0.05–0.17 m/s velocity RMSE.
+- **Collision prediction:** Predict which UAVs are at risk and when the projectile will get too close. All 9 tests passed.
+- **Avoidance planning:** Use SQP optimization to find the smallest coordinated UAV movements that avoid collisions with the projectile and other UAVs. All 7 tests passed.
+- **k-Wave:** Experimented with simulating actual sound reflections, but haven't integrated this into the main simulation.
 
 ***Up Next:***
-Online estimation with Extended Kalman Filter (EKF)
 
+1. **Test UAV avoidance in PyBullet:** Actually move the UAVs according to our planned avoidance maneuvers and verify they avoid collisions.
+2. **Integrate with online EKF:** Connect acoustic sensing and trajectory estimation to the avoidance planner so the UAVs react based on estimated trajectories rather than ground truth.
 
+***After That:***
 
+Run experiments across different trajectories, swarm configurations, and noise levels; compare against our proposed baselines; and evaluate collision rates, displacement, accuracy, and runtime.
