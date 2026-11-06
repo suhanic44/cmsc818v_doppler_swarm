@@ -1,12 +1,12 @@
 
+"""Shared acoustic Doppler model and multistart batch trajectory estimator."""
+
 import numpy as np
 from scipy.optimize import least_squares
 
 SPEED_OF_SOUND = 343.0
 SPEAKER_FREQUENCY = 10000.0
-
-# 40 ms audio window, evaluated approximately at its center.
-DEFAULT_MEASUREMENT_LAG = 0.02
+DEFAULT_MEASUREMENT_LAG = 0.02  # 40 ms audio window: effective sample at center
 
 
 def predict_doppler(
@@ -17,93 +17,71 @@ def predict_doppler(
     c=SPEED_OF_SOUND,
     delay_aware=True,
     measurement_lag=0.0,
+    uav_velocities=None,
 ):
-    """
-    Predict Doppler measurements for a constant-velocity target.
+    """Predict Doppler (Hz) from a moving reflector and monostatic UAVs.
 
-    state: [px, py, pz, vx, vy, vz] at t=0
-    times: shape (K,), relative to the state reference time
-    uav_positions: shape (N, 3)
-
-    times represent measurement availability timestamps.
-
-    measurement_lag shifts the effective acoustic observation
-    time earlier than the availability timestamp.
-
-    When delay_aware=True, solve separately for each UAV's
-    reflection time, accounting for acoustic propagation.
-
-    Returns: shape (K, N)
-
-    Positive Doppler shift means approaching.
+    state: [projectile position(3), velocity(3)] at time zero.
+    times: (K,) window-end availability timestamps in the state's time frame.
+    uav_positions: (N, 3) at each sample's effective reception time
+                   (window end minus measurement_lag).
+    uav_velocities: (N, 3) at that same time, held constant over the
+                    approximately millisecond-scale acoustic round trip.
+    Returns: (K, N), positive for approaching motion.
     """
     state = np.asarray(state, dtype=float).reshape(6)
-    times = np.atleast_1d(
-        np.asarray(times, dtype=float)
-    )
-    uav_positions = np.asarray(
-        uav_positions, dtype=float
-    ).reshape(-1, 3)
+    times = np.atleast_1d(np.asarray(times, dtype=float))
+    uav_positions = np.asarray(uav_positions, dtype=float).reshape(-1, 3)
+    if uav_velocities is None:
+        uav_velocities = np.zeros_like(uav_positions)
+    else:
+        uav_velocities = np.asarray(uav_velocities, dtype=float).reshape(-1, 3)
+    if uav_velocities.shape != uav_positions.shape:
+        raise ValueError("UAV positions and velocities must have matching shapes")
 
-    p0 = state[:3]
-    v = state[3:]
+    p0, v = state[:3], state[3:]
+    receive_times = times[:, None] - measurement_lag
+    receive_positions = uav_positions[None, :, :]
 
-    # Effective acoustic observation time.
-    observation_times = times - measurement_lag
-
-    # One reflection time per UAV and observation.
+    # Return path: t_receive = t_reflect + ||p(t_reflect)-s(t_receive)|| / c.
     reflection_times = np.broadcast_to(
-        observation_times[:, None],
-        (len(times), len(uav_positions)),
+        receive_times, (len(times), len(uav_positions))
     ).copy()
-
     if delay_aware:
-        # Solve:
-        # t_observe = t_reflect + distance(t_reflect)/c
-        for _ in range(15):
-            positions = (
-                p0[None, None, :]
-                + reflection_times[..., None] * v
+        for _ in range(12):
+            reflected = p0 + reflection_times[..., None] * v
+            distances = np.linalg.norm(reflected - receive_positions, axis=-1)
+            reflection_times = receive_times - distances / c
+    reflected = p0 + reflection_times[..., None] * v
+
+    # Outbound path: t_reflect = t_emit + ||p(t_reflect)-s(t_emit)|| / c.
+    emission_times = reflection_times.copy()
+    if delay_aware:
+        for _ in range(12):
+            emitted_from = (
+                receive_positions
+                + (emission_times - receive_times)[..., None]
+                * uav_velocities[None, :, :]
             )
-
-            distances = np.linalg.norm(
-                positions - uav_positions[None, :, :],
-                axis=2,
-            )
-
-            reflection_times = (
-                observation_times[:, None]
-                - distances / c
-            )
-
-    positions = (
-        p0[None, None, :]
-        + reflection_times[..., None] * v
+            distances = np.linalg.norm(reflected - emitted_from, axis=-1)
+            emission_times = reflection_times - distances / c
+    emitted_from = (
+        receive_positions
+        + (emission_times - receive_times)[..., None] * uav_velocities[None, :, :]
     )
 
-    displacement = (
-        positions - uav_positions[None, :, :]
-    )
+    outbound = reflected - emitted_from
+    inbound = reflected - receive_positions
+    outbound /= np.maximum(np.linalg.norm(outbound, axis=-1, keepdims=True), 1e-8)
+    inbound /= np.maximum(np.linalg.norm(inbound, axis=-1, keepdims=True), 1e-8)
 
-    distances = np.linalg.norm(displacement, axis=2)
+    vp_out = np.sum(outbound * v, axis=-1)
+    vp_in = np.sum(inbound * v, axis=-1)
+    vu_out = np.sum(outbound * uav_velocities[None, :, :], axis=-1)
+    vu_in = np.sum(inbound * uav_velocities[None, :, :], axis=-1)
 
-    directions = (
-        displacement
-        / np.maximum(distances[..., None], 1e-8)
-    )
-
-    # Positive radial velocity means moving away.
-    radial_velocity = np.sum(
-        directions * v[None, None, :],
-        axis=2,
-    )
-
-    # Exact moving-reflector Doppler formula.
-    return frequency * (
-        (c - radial_velocity)
-        / (c + radial_velocity)
-        - 1.0
-    )
+    received = frequency * (c - vp_out) / (c - vu_out) * (c + vu_in) / (c + vp_in)
+    return received - frequency
 
 
 def estimate_initial_state(
@@ -115,33 +93,21 @@ def estimate_initial_state(
     c=SPEED_OF_SOUND,
     measurement_lag=DEFAULT_MEASUREMENT_LAG,
 ):
-    """
-    Estimate initial 3D position and velocity
-    from received Doppler measurements.
-    """
+    """Fit constant-velocity initial state from stationary-UAV Doppler data."""
+    measured_doppler = np.asarray(measured_doppler, dtype=float)
 
     def residuals(state):
-        predicted = predict_doppler(
-            state,
-            times,
-            uav_positions,
-            frequency=frequency,
-            c=c,
-            delay_aware=True,
-            measurement_lag=measurement_lag,
+        prediction = predict_doppler(
+            state, times, uav_positions, frequency=frequency, c=c,
+            delay_aware=True, measurement_lag=measurement_lag,
         )
+        if measured_doppler.shape != prediction.shape:
+            raise ValueError("Measured Doppler must have shape (times, UAVs)")
+        return (prediction - measured_doppler).ravel()
 
-        return (
-            predicted - measured_doppler
-        ).ravel()
-
-    result = least_squares(
-        residuals,
-        x0=np.asarray(initial_guess, dtype=float),
-        max_nfev=3000,
+    return least_squares(
+        residuals, x0=np.asarray(initial_guess, dtype=float), max_nfev=3000
     )
-
-    return result
 
 
 def estimate_initial_state_multistart(
@@ -154,32 +120,18 @@ def estimate_initial_state_multistart(
     seed=42,
     measurement_lag=DEFAULT_MEASUREMENT_LAG,
 ):
-    """
-    Run batch estimation from multiple random initial guesses.
-
-    Return the solution with the lowest residual cost.
-    """
+    """Select the lowest-residual solution among random initial guesses."""
     rng = np.random.default_rng(seed)
-    best_result = None
-
+    best = None
     for _ in range(n_starts):
-        initial_guess = np.concatenate([
+        guess = np.concatenate((
             rng.uniform(*position_bounds, size=3),
             rng.uniform(*velocity_bounds, size=3),
-        ])
-
+        ))
         result = estimate_initial_state(
-            times,
-            uav_positions,
-            measured_doppler,
-            initial_guess,
+            times, uav_positions, measured_doppler, guess,
             measurement_lag=measurement_lag,
         )
-
-        if (
-            best_result is None
-            or result.cost < best_result.cost
-        ):
-            best_result = result
-
-    return best_result
+        if best is None or result.cost < best.cost:
+            best = result
+    return best

@@ -1,12 +1,5 @@
 
-"""
-Extended Kalman Filter (EKF) for acoustic trajectory estimation.
-
-- Multistart batch initialization
-- Constant-velocity state prediction
-- Delay-aware Doppler measurement correction
-- Causal acoustic window timing
-"""
+"""Extended Kalman filter with the same Doppler model as batch estimation."""
 
 import numpy as np
 
@@ -27,220 +20,111 @@ class ExtendedKalmanFilter:
         self.x = None
         self.P = None
         self.t = None
-
         self.sigma_doppler = sigma_doppler
         self.acceleration_noise = acceleration_noise
         self.measurement_lag = measurement_lag
 
-    def initialize(
-        self,
-        times,
-        uav_positions,
-        measured_doppler,
-        initial_covariance,
-    ):
-        """
-        Estimate the state at t=0 using the initial
-        Doppler measurement window.
-        """
+    def initialize(self, times, uav_positions, measured_doppler, initial_covariance):
+        """Fit state at time zero using the initial stationary-UAV window."""
         result = estimate_initial_state_multistart(
-            times,
-            uav_positions,
-            measured_doppler,
-            n_starts=30,
-            measurement_lag=self.measurement_lag,
+            times, uav_positions, measured_doppler,
+            n_starts=30, measurement_lag=self.measurement_lag,
         )
-
         if not result.success:
             raise RuntimeError("Batch initialization failed")
-
         self.x = result.x.copy()
-        self.P = np.asarray(
-            initial_covariance, dtype=float
-        ).copy()
+        self.P = np.asarray(initial_covariance, dtype=float).copy()
         self.t = 0.0
-
         print("Optimizer evaluations:", result.nfev)
         print("Final residual cost:", result.cost)
         print("Optimizer message:", result.message)
-
         return self.x
 
     def predict(self, dt):
-        """
-        Predict the projectile's next state using
-        a constant-velocity model.
-        """
+        """Advance state and covariance by dt seconds (constant velocity)."""
         if dt < 0:
             raise ValueError("dt must be nonnegative")
-
         F = np.eye(6)
         F[:3, 3:] = np.eye(3) * dt
-
         self.x = F @ self.x
-
-        # Process noise covariance.
-        q = self.acceleration_noise
-
-        G = np.vstack([
-            0.5 * dt**2 * np.eye(3),
-            dt * np.eye(3),
-        ])
-
-        Q = q * (G @ G.T)
-
+        G = np.vstack((0.5 * dt**2 * np.eye(3), dt * np.eye(3)))
+        Q = self.acceleration_noise * (G @ G.T)
         self.P = F @ self.P @ F.T + Q
         self.t += dt
-
         return self.x
 
-    def update(self, measured_doppler, uav_positions):
+    def update(self, measured_doppler, uav_positions, uav_velocities=None):
+        """Correct state at self.t using a completed acoustic window.
+
+        The EKF state is at window-end availability time self.t.
+        Supply UAV positions and velocities at self.t - measurement_lag
+        (the effective reception time, near the window center).
         """
-        Correct the current state estimate using Doppler.
+        z = np.asarray(measured_doppler, dtype=float).ravel()
+        positions = np.asarray(uav_positions, dtype=float).reshape(-1, 3)
+        if uav_velocities is None:
+            velocities = np.zeros_like(positions)
+        else:
+            velocities = np.asarray(uav_velocities, dtype=float).reshape(-1, 3)
+        if len(z) != len(positions) or velocities.shape != positions.shape:
+            raise ValueError("One Doppler sample and velocity per UAV required")
 
-        The state is referenced to the current measurement
-        availability time. The acoustic observation describes
-        an earlier time, handled by measurement_lag.
-        """
-        z = np.asarray(
-            measured_doppler, dtype=float
-        ).ravel()
-
-        uav_positions = np.asarray(
-            uav_positions, dtype=float
-        )
-
-        def measurement_model(state):
+        def h(state):
             return predict_doppler(
-                state,
-                np.array([0.0]),
-                uav_positions,
-                delay_aware=True,
+                state, np.array([0.0]), positions, delay_aware=True,
                 measurement_lag=self.measurement_lag,
+                uav_velocities=velocities,
             ).ravel()
 
-        z_pred = measurement_model(self.x)
-
-        # Numerical measurement Jacobian.
-        H = np.zeros((len(z), 6))
+        expected = h(self.x)
+        H = np.empty((len(z), 6))
         eps = 1e-5
-
         for j in range(6):
-            x_perturbed = self.x.copy()
-            x_perturbed[j] += eps
+            perturbed = self.x.copy()
+            perturbed[j] += eps
+            H[:, j] = (h(perturbed) - expected) / eps
 
-            z_perturbed = measurement_model(x_perturbed)
-
-            H[:, j] = (
-                z_perturbed - z_pred
-            ) / eps
-
-        R = (
-            self.sigma_doppler**2
-            * np.eye(len(z))
-        )
-
-        y = z - z_pred
-
+        R = self.sigma_doppler**2 * np.eye(len(z))
+        innovation = z - expected
         S = H @ self.P @ H.T + R
         K = np.linalg.solve(S, H @ self.P).T
+        self.x = self.x + K @ innovation
 
-        self.x = self.x + K @ y
-
-        # Joseph-form covariance update.
-        I = np.eye(6)
-        A = I - K @ H
-
-        self.P = (
-            A @ self.P @ A.T
-            + K @ R @ K.T
-        )
-
+        I_KH = np.eye(6) - K @ H
+        self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
         return self.x
 
 
 def main():
-    """
-    Standalone synthetic EKF test.
-
-    Measurements are generated from the same delay-aware
-    model used by the estimator.
-    """
-    true_state = np.array([
-        3., 3., 3.,
-        -2., -1.5, -1.,
-    ])
-
+    """Synthetic regression check using the shared Doppler model."""
+    initial_state = np.array([3., 3., 3., -2., -1.5, -1.])
     uav_positions = np.array([
-        [0., 0., 0.],
-        [2., 0., 0.],
-        [0., 2., 0.],
-        [0., 0., 2.],
+        [0., 0., 0.], [2., 0., 0.], [0., 2., 0.], [0., 0., 2.]
     ])
-
     times = np.linspace(0.04, 0.5, 24)
-
-    measured_doppler = predict_doppler(
-        true_state,
-        times,
-        uav_positions,
+    doppler = predict_doppler(
+        initial_state, times, uav_positions,
         measurement_lag=DEFAULT_MEASUREMENT_LAG,
     )
-
     K = np.searchsorted(times, 0.2, side="right")
-
     ekf = ExtendedKalmanFilter()
-
-    ekf.initialize(
-        times=times[:K],
-        uav_positions=uav_positions,
-        measured_doppler=measured_doppler[:K],
-        initial_covariance=np.eye(6),
-    )
-
+    ekf.initialize(times[:K], uav_positions, doppler[:K], np.eye(6))
     ekf.predict(times[K - 1])
+    ekf.x += np.array([0.2, -0.2, 0.1, 0.1, -0.1, 0.1])
 
-    # Perturb the initial estimate to test correction.
-    ekf.x += np.array([
-        0.2, -0.2, 0.1,
-        0.1, -0.1, 0.1,
-    ])
-
-    estimated_states = []
-    true_states = []
-
+    estimated, truth = [], []
     for k in range(K, len(times)):
-        dt = times[k] - times[k - 1]
-
-        ekf.predict(dt)
-        ekf.update(
-            measured_doppler[k],
-            uav_positions,
-        )
-
-        estimated_states.append(ekf.x.copy())
-
-        actual = true_state.copy()
-        actual[:3] += true_state[3:] * times[k]
-        true_states.append(actual)
-
-    estimated_states = np.asarray(estimated_states)
-    true_states = np.asarray(true_states)
-
-    position_errors = np.linalg.norm(
-        estimated_states[:, :3] - true_states[:, :3],
-        axis=1,
-    )
-
-    velocity_errors = np.linalg.norm(
-        estimated_states[:, 3:] - true_states[:, 3:],
-        axis=1,
-    )
-
-    print("\nFinal true state:", true_states[-1])
-    print("Final estimated state:", estimated_states[-1])
-    print(f"Mean position error: {position_errors.mean():.6f} m")
-    print(f"Mean velocity error: {velocity_errors.mean():.6f} m/s")
+        ekf.predict(times[k] - times[k - 1])
+        ekf.update(doppler[k], uav_positions)
+        actual = initial_state.copy()
+        actual[:3] += actual[3:] * times[k]
+        estimated.append(ekf.x.copy())
+        truth.append(actual)
+    estimated, truth = np.asarray(estimated), np.asarray(truth)
+    print("Final true state:", truth[-1])
+    print("Final estimated state:", estimated[-1])
+    print("Mean position error:", np.mean(np.linalg.norm(estimated[:, :3] - truth[:, :3], axis=1)))
+    print("Mean velocity error:", np.mean(np.linalg.norm(estimated[:, 3:] - truth[:, 3:], axis=1)))
 
 
 if __name__ == "__main__":
