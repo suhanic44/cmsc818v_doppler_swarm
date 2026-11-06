@@ -1,11 +1,10 @@
-
 """Extended Kalman filter with the same Doppler model as batch estimation."""
 
 import numpy as np
 
 from estimation.batch_estimator import (
     DEFAULT_MEASUREMENT_LAG,
-    estimate_initial_state_multistart,
+    estimate_initial_state_geometry,
     predict_doppler,
 )
 
@@ -25,10 +24,10 @@ class ExtendedKalmanFilter:
         self.measurement_lag = measurement_lag
 
     def initialize(self, times, uav_positions, measured_doppler, initial_covariance):
-        """Fit state at time zero using the initial stationary-UAV window."""
-        result = estimate_initial_state_multistart(
+        """Fit state at time zero using geometry-informed batch initialization."""
+        result = estimate_initial_state_geometry(
             times, uav_positions, measured_doppler,
-            n_starts=30, measurement_lag=self.measurement_lag,
+            measurement_lag=self.measurement_lag,
         )
         if not result.success:
             raise RuntimeError("Batch initialization failed")
@@ -117,7 +116,7 @@ def main():
         ekf.predict(times[k] - times[k - 1])
         ekf.update(doppler[k], uav_positions)
         actual = initial_state.copy()
-        actual[:3] += actual[3:] * times[k]
+        actual[:3] += initial_state[3:] * times[k]
         estimated.append(ekf.x.copy())
         truth.append(actual)
     estimated, truth = np.asarray(estimated), np.asarray(truth)

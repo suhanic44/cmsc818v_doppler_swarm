@@ -104,25 +104,12 @@ class SimulationWorld:
                 physicsClientId=self.client
             )
 
-            if os.path.isfile(self.drone_mesh_path):
-                visual = p.createVisualShape(
-                    shapeType=p.GEOM_MESH,
-                    fileName=self.drone_mesh_path,
-                    meshScale=[
-                        mesh_scale,
-                        mesh_scale,
-                        mesh_scale
-                    ],
-                    rgbaColor=[0.2, 0.4, 0.9, 1],
-                    physicsClientId=self.client
-                )
-            else:
-                visual = p.createVisualShape(
-                    p.GEOM_SPHERE,
-                    radius=radius,
-                    rgbaColor=[0.1, 0.3, 0.9, 1],
-                    physicsClientId=self.client
-                )
+            visual = p.createVisualShape(
+                p.GEOM_SPHERE,
+                radius=radius,
+                rgbaColor=[0.1, 0.3, 0.9, 1],
+                physicsClientId=self.client,
+            )
 
         return p.createMultiBody(
             baseMass=0,
