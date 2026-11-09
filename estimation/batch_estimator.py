@@ -121,6 +121,7 @@ def estimate_initial_state(
     frequency=SPEAKER_FREQUENCY,
     c=SPEED_OF_SOUND,
     measurement_lag=DEFAULT_MEASUREMENT_LAG,
+    max_nfev=3000,
 ):
     """Fit constant-velocity initial state from stationary-UAV Doppler data."""
     measured_doppler = np.asarray(measured_doppler, dtype=float)
@@ -146,7 +147,7 @@ def estimate_initial_state(
     return least_squares(
         residuals,
         x0=np.asarray(initial_guess, dtype=float),
-        max_nfev=3000,
+        max_nfev=max_nfev,
     )
 
 
@@ -194,6 +195,9 @@ def estimate_initial_state_geometry(
     velocity_bounds=(-5, 5),
     measurement_lag=DEFAULT_MEASUREMENT_LAG,
 ):
+    import time
+    total_start = time.perf_counter()
+
     """Search positions geometrically, infer velocities, then refine with full Doppler model."""
     times = np.asarray(times, dtype=float)
     uav_positions = np.asarray(
@@ -272,22 +276,161 @@ def estimate_initial_state_geometry(
         raise RuntimeError(
             "No valid geometry initialization candidates"
         )
+    
+    # import /time
 
-    # Refine the lowest-cost geometry candidates.
     candidates.sort(key=lambda item: item[0])
 
-    best = None
+    # Experimental parameters
+    n_screen = 100
+    screen_evaluations = 5
+    n_final = 10
 
-    for _, guess in candidates[:n_refine]:
+    print("\n=== TWO-STAGE INITIALIZATION ===")
+    print("Total grid candidates:", len(candidates))
+    print("Screening candidates:", n_screen)
+    print("Screening budget:", screen_evaluations)
+    print("Full refinements:", n_final)
+
+    start_time = time.perf_counter()
+
+    screened = []
+    screening_nfev = 0
+
+    # -------------------------------------------
+    # Stage 1: Short optimization runs
+    # -------------------------------------------
+
+    for rank, (initial_cost, guess) in enumerate(
+        candidates[:n_screen],
+        start=1,
+    ):
         result = estimate_initial_state(
             times,
             uav_positions,
             measured_doppler,
             initial_guess=guess,
             measurement_lag=measurement_lag,
+            max_nfev=screen_evaluations,
         )
+
+        screening_nfev += result.nfev
+
+        if rank in (45, 46):
+            print(
+                f"DEBUG rank={rank} | "
+                f"initial_cost={initial_cost:.4f} | "
+                f"screened_cost={result.cost:.4f} | "
+                f"screened_state={np.round(result.x, 3)}"
+            )
+
+        if np.isfinite(result.cost):
+            improvement = (
+                (initial_cost - result.cost)
+                / max(abs(initial_cost), 1e-12)
+            )
+
+            screened.append((
+                result.cost,
+                rank,
+                result.x.copy(),
+                improvement,
+            ))
+
+    if not screened:
+        raise RuntimeError(
+            "No valid candidates after screening"
+        )
+
+    # -------------------------------------------
+    # Select finalists using a hybrid strategy
+    # -------------------------------------------
+
+    # Half selected by lowest screened cost,
+    # half by greatest relative improvement.
+    n_by_cost = n_final // 2
+
+    by_cost = sorted(
+        screened,
+        key=lambda item: item[0],
+    )
+
+    by_improvement = sorted(
+        screened,
+        key=lambda item: item[3],
+        reverse=True,
+    )
+
+    finalists = []
+    selected_ranks = set()
+
+    # First: candidates with lowest screened costs
+    for item in by_cost[:n_by_cost]:
+        finalists.append(item)
+        selected_ranks.add(item[1])
+
+    # Second: candidates with greatest improvement
+    for item in by_improvement:
+        if item[1] in selected_ranks:
+            continue
+
+        finalists.append(item)
+        selected_ranks.add(item[1])
+
+        if len(finalists) >= n_final:
+            break
+
+    print("\n=== SELECTED FINALISTS ===")
+    for cost, rank, state, improvement in finalists:
+        print(
+            f"  Original rank={rank:3d} | "
+            f"Screened cost={cost:.4f} | "
+            f"Improvement={improvement:.1%}"
+        )
+
+    print("===========================\n")
+
+    # -------------------------------------------
+    # Stage 2: Full nonlinear optimization
+    # -------------------------------------------
+
+    best = None
+    best_rank = None
+    refinement_nfev = 0
+
+    for screened_cost, rank, guess, improvement in finalists:
+        result = estimate_initial_state(
+            times,
+            uav_positions,
+            measured_doppler,
+            initial_guess=guess,
+            measurement_lag=measurement_lag,
+            max_nfev=3000,
+        )
+
+        refinement_nfev += result.nfev
 
         if best is None or result.cost < best.cost:
             best = result
+            best_rank = rank
+
+    elapsed = time.perf_counter() - start_time
+
+    # -------------------------------------------
+    # Results
+    # -------------------------------------------
+
+    print("\n=== TWO-STAGE RESULTS ===")
+    print("Best original grid rank:", best_rank)
+    print("Final residual cost:", best.cost)
+    print("Estimated state:", np.round(best.x, 4))
+    print("Screening nfev:", screening_nfev)
+    print("Refinement nfev:", refinement_nfev)
+    print("Total nfev:", screening_nfev + refinement_nfev)
+    print(f"Screening + refinement time: {elapsed:.3f} s")
+    print("=========================\n")
+
+    total_elapsed = time.perf_counter() - total_start
+    print(f"TOTAL INITIALIZATION TIME: {total_elapsed:.4f} seconds")
 
     return best
