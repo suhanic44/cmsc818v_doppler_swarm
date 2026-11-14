@@ -15,6 +15,7 @@ class ExtendedKalmanFilter:
         sigma_doppler=1.0,
         acceleration_noise=0.1,
         measurement_lag=DEFAULT_MEASUREMENT_LAG,
+        initializer_options=None,
     ):
         self.x = None
         self.P = None
@@ -22,15 +23,18 @@ class ExtendedKalmanFilter:
         self.sigma_doppler = sigma_doppler
         self.acceleration_noise = acceleration_noise
         self.measurement_lag = measurement_lag
+        self.initializer_options = dict(initializer_options or {})
 
     def initialize(self, times, uav_positions, measured_doppler, initial_covariance):
         """Fit state at time zero using geometry-informed batch initialization."""
         result = estimate_initial_state_geometry(
             times, uav_positions, measured_doppler,
             measurement_lag=self.measurement_lag,
+            **self.initializer_options,
         )
         if not result.success:
             raise RuntimeError("Batch initialization failed")
+        self.initialization_result = result
         self.x = result.x.copy()
         self.P = np.asarray(initial_covariance, dtype=float).copy()
         self.t = 0.0

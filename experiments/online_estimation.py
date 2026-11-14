@@ -137,6 +137,7 @@ class OnlineEstimationPipeline:
         self,
         uav_positions,
         init_window=INIT_WINDOW,
+        initializer_options=None,
     ):
         self.uav_positions = np.asarray(
             uav_positions,
@@ -154,7 +155,9 @@ class OnlineEstimationPipeline:
         self.measured_doppler = []
 
         # Trajectory estimator.
-        self.ekf = ExtendedKalmanFilter()
+        self.ekf = ExtendedKalmanFilter(
+            initializer_options=initializer_options
+        )
         self.initialized = False
 
         # Estimated states after EKF updates.

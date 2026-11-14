@@ -57,6 +57,7 @@ class OnlineAvoidanceResult:
     planning_attempts: int
     successful_plans: int
     first_plan_time: float | None
+    first_command_time: float | None
     initialized: bool
     minimum_projectile_separation: float
     minimum_uav_separation: float
@@ -71,6 +72,12 @@ class OnlineAvoidanceResult:
     doppler_rmse: float
     moving_doppler_rmse: float
     moving_doppler_samples: int
+    initialization_runtime: float | None
+    ekf_update_runtimes: np.ndarray
+    planning_runtimes: np.ndarray
+    first_estimate_time: float | None
+    total_uav_path_length: float
+    state_source: str
 
 
 def rmse(values):
@@ -263,7 +270,15 @@ def run_online_avoidance(
     realtime=False,
     replan_interval=REPLAN_INTERVAL,
     verbose=True,
+    state_source="estimate",
+    uplink_delay=0.0,
+    downlink_delay=0.0,
+    initializer_options=None,
 ):
+    if state_source not in ("estimate", "oracle"):
+        raise ValueError("state_source must be 'estimate' or 'oracle'")
+    if uplink_delay < 0 or downlink_delay < 0:
+        raise ValueError("Communication delays must be nonnegative")
     projectile_state = np.asarray(
         projectile_state, dtype=float
     ).reshape(6)
@@ -281,6 +296,7 @@ def run_online_avoidance(
     pipeline = OnlineEstimationPipeline(
         initial_uavs,
         init_window=INIT_WINDOW,
+        initializer_options=initializer_options,
     )
     motion_history = UAVMotionHistory()
     doppler_errors = []
@@ -288,15 +304,21 @@ def run_online_avoidance(
     planning_attempts = 0
     successful_plans = 0
     first_plan_time = None
+    first_command_time = None
     last_plan_time = -float("inf")
     movement_start = None
     movement_origins = None
     movement_targets = None
+    pending_targets = None
+    pending_delivery_time = None
     minimum_projectile = float("inf")
     minimum_uav = float("inf")
     position_errors = []
     velocity_errors = []
     estimate_times = []
+    planning_runtimes = []
+    total_uav_path_length = 0.0
+    previous_uavs = None
     try:
         uav_ids = [
             world.create_uav(
@@ -332,6 +354,19 @@ def run_online_avoidance(
         for step, t in enumerate(timestamps):
             t = float(t)
 
+            # Deliver the newest planned command after the simulated downlink.
+            if (
+                pending_delivery_time is not None
+                and t + 1e-9 >= pending_delivery_time
+            ):
+                movement_start = t
+                movement_origins = world.get_uav_positions(uav_ids)
+                movement_targets = pending_targets
+                pending_targets = None
+                pending_delivery_time = None
+                if first_command_time is None:
+                    first_command_time = t
+
             # -------------------------------------------
             # 1. Execute the active UAV maneuver.
             # -------------------------------------------
@@ -346,6 +381,12 @@ def run_online_avoidance(
             current_uavs = world.get_uav_positions(
                 uav_ids
             )
+            if previous_uavs is not None:
+                total_uav_path_length += float(np.sum(np.linalg.norm(
+                    current_uavs - previous_uavs,
+                    axis=1,
+                )))
+            previous_uavs = current_uavs.copy()
             current_velocities = np.zeros_like(
                 current_uavs
             )
@@ -378,33 +419,33 @@ def run_online_avoidance(
             # -------------------------------------------
             # 3. Generate acoustic measurements.
             # -------------------------------------------
-            previous_updates = len(
-                pipeline.estimated_times
-            )
-            for i, sensor in enumerate(sensors):
-                measurement_times, doppler = (
-                    sensor.advance(
-                        physics_time=t,
-                        projectile_position=true_position,
-                        sensor_position=current_uavs[i],
+            previous_updates = len(pipeline.estimated_times)
+            if state_source == "estimate":
+                for i, sensor in enumerate(sensors):
+                    measurement_times, doppler = (
+                        sensor.advance(
+                            physics_time=t,
+                            projectile_position=true_position,
+                            sensor_position=current_uavs[i],
+                        )
                     )
-                )
-                pipeline.add_measurements(
-                    i,
-                    measurement_times,
-                    doppler,
-                )
+                    pipeline.add_measurements(
+                        i,
+                        measurement_times,
+                        doppler,
+                    )
 
             # -------------------------------------------
             # 4. Update EKF with historical UAV geometry.
             # -------------------------------------------
-            process_pipeline_measurements(
-                pipeline,
-                t,
-                motion_history,
-                doppler_errors,
-                moving_doppler_errors,
-            )
+            if state_source == "estimate":
+                process_pipeline_measurements(
+                    pipeline,
+                    t - uplink_delay,
+                    motion_history,
+                    doppler_errors,
+                    moving_doppler_errors,
+                )
             new_updates = len(
                 pipeline.estimated_times
             )
@@ -434,29 +475,31 @@ def run_online_avoidance(
             # -------------------------------------------
             # 6. Replan using the EKF state.
             # -------------------------------------------
-            new_estimate = (
-                new_updates > previous_updates
-            )
-            should_plan = (
-                pipeline.initialized
-                and new_estimate
-                and t - last_plan_time
-                >= replan_interval - 1e-9
-            )
+            new_estimate = new_updates > previous_updates
+            if state_source == "oracle":
+                should_plan = (
+                    t - last_plan_time >= replan_interval - 1e-9
+                )
+            else:
+                should_plan = (
+                    pipeline.initialized
+                    and new_estimate
+                    and t - last_plan_time
+                    >= replan_interval - 1e-9
+                )
             if should_plan:
                 last_plan_time = t
                 planning_attempts += 1
-                estimated_state = (
-                    pipeline.ekf.x.copy()
-                )
-                estimate_age = max(
-                    0.0,
-                    t - pipeline.ekf.t,
-                )
-                estimated_state[:3] += (
-                    estimated_state[3:] * estimate_age
-                )
-                if planning_attempts == 1:
+                if state_source == "oracle":
+                    estimated_state = projectile_state.copy()
+                    estimated_state[:3] += projectile_state[3:] * t
+                else:
+                    estimated_state = pipeline.ekf.x.copy()
+                    estimate_age = max(0.0, t - pipeline.ekf.t)
+                    estimated_state[:3] += (
+                        estimated_state[3:] * estimate_age
+                    )
+                if planning_attempts == 1 and verbose:
                     true_state = projectile_state.copy()
                     true_state[:3] += true_state[3:] * t
                     print("\nFIRST PLANNING ATTEMPT")
@@ -464,6 +507,7 @@ def run_online_avoidance(
                     print("True state:     ", np.round(true_state, 3))
                 remaining_horizon = duration - t
                 if remaining_horizon > 0:
+                    planning_start = time.perf_counter()
                     plan = plan_avoidance(
                         state=estimated_state,
                         uav_positions=current_uavs,
@@ -477,17 +521,23 @@ def run_online_avoidance(
                             UAV_SEPARATION_MARGIN
                         ),
                     )
+                    planning_runtimes.append(
+                        time.perf_counter() - planning_start
+                    )
                     if plan.success:
                         successful_plans += 1
                         if first_plan_time is None:
                             first_plan_time = t
-                        movement_start = t
-                        movement_origins = (
-                            current_uavs.copy()
-                        )
-                        movement_targets = (
-                            plan.target_positions.copy()
-                        )
+                        pending_targets = plan.target_positions.copy()
+                        pending_delivery_time = t + downlink_delay
+                        if downlink_delay <= 1e-12:
+                            movement_start = t
+                            movement_origins = current_uavs.copy()
+                            movement_targets = pending_targets
+                            pending_targets = None
+                            pending_delivery_time = None
+                            if first_command_time is None:
+                                first_command_time = t
                         if verbose:
                             print(
                                 f"t={t:.3f}s | "
@@ -550,6 +600,7 @@ def run_online_avoidance(
         planning_attempts=planning_attempts,
         successful_plans=successful_plans,
         first_plan_time=first_plan_time,
+        first_command_time=first_command_time,
         initialized=pipeline.initialized,
         minimum_projectile_separation=minimum_projectile,
         minimum_uav_separation=minimum_uav,
@@ -572,6 +623,15 @@ def run_online_avoidance(
         moving_doppler_samples=len(
             moving_doppler_errors
         ),
+        initialization_runtime=pipeline.initialization_runtime,
+        ekf_update_runtimes=np.asarray(pipeline.update_runtimes),
+        planning_runtimes=np.asarray(planning_runtimes),
+        first_estimate_time=(
+            float(estimate_times[0] + uplink_delay)
+            if estimate_times else None
+        ),
+        total_uav_path_length=total_uav_path_length,
+        state_source=state_source,
     )
     if verbose:
         print("\n" + "=" * 55)

@@ -318,52 +318,43 @@ def plan_avoidance(
         if prediction.threatened
     ]
 
-    def unpack(x):
-        return np.asarray(x).reshape(n_uavs, 3)
-
-    # Smooth approximation to total Euclidean displacement.
-    # The small epsilon avoids a nondifferentiable point at zero.
-    epsilon = 1e-6
-
-    def objective(x):
-        displacements = unpack(x)
-        lengths = np.linalg.norm(displacements, axis=1)
-
-        return float(np.sum(
-            np.sqrt(lengths**2 + epsilon**2) - epsilon
-        ))
-
-    def speed_constraints(x):
-        displacements = unpack(x)
-        distances = np.linalg.norm(displacements, axis=1)
-
-        return max_displacement - distances
-
-    def separation_constraints(x):
-        displacements = unpack(x)
-
-        projectile_distances, uav_distances = (
-            _separation_distances(
-                state,
-                positions,
-                displacements,
-                prediction_horizon,
-                maneuver_duration,
-            )
+    # Safety is required from t=0 onward. If a boundary is already violated,
+    # no future displacement can repair the plan, so avoid exhausting SLSQP
+    # starts on a mathematically infeasible problem.
+    current_projectile_distances = np.linalg.norm(
+        positions - state[:3], axis=1
+    )
+    current_uav_distances = np.array([
+        np.linalg.norm(positions[i] - positions[j])
+        for i in range(n_uavs)
+        for j in range(i + 1, n_uavs)
+    ])
+    initially_unsafe = bool(
+        np.any(current_projectile_distances < projectile_safety_radius - 1e-9)
+        or (
+            len(current_uav_distances)
+            and np.any(current_uav_distances < uav_safety_distance - 1e-9)
         )
-
-        projectile_clearances = (
-            projectile_distances - projectile_safety_radius
+    )
+    if initially_unsafe:
+        return AvoidancePlan(
+            success=False,
+            target_positions=positions.copy(),
+            displacements=np.zeros_like(positions),
+            total_displacement=0.0,
+            number_moved=0,
+            minimum_projectile_separation=float(
+                np.min(current_projectile_distances)
+            ),
+            minimum_uav_separation=(
+                float(np.min(current_uav_distances))
+                if len(current_uav_distances) else float("inf")
+            ),
+            message=(
+                "Safety boundary is already violated at planning time; "
+                "no full-horizon feasible maneuver exists."
+            ),
         )
-
-        uav_clearances = (
-            uav_distances - uav_safety_distance
-        )
-
-        return np.concatenate([
-            projectile_clearances,
-            uav_clearances,
-        ])
 
     def validate_solution(displacements):
         projectile_distances, uav_distances = (
@@ -397,16 +388,21 @@ def plan_avoidance(
             if len(uav_distances) else float("inf"),
         )
 
-    constraints = [
-        {
-            "type": "ineq",
-            "fun": speed_constraints,
-        },
-        {
-            "type": "ineq",
-            "fun": separation_constraints,
-        },
-    ]
+    zero_displacements = np.zeros_like(positions)
+    zero_valid, zero_min_projectile, zero_min_uav = validate_solution(
+        zero_displacements
+    )
+    if not threatened_indices and zero_valid:
+        return AvoidancePlan(
+            success=True,
+            target_positions=positions.copy(),
+            displacements=zero_displacements,
+            total_displacement=0.0,
+            number_moved=0,
+            minimum_projectile_separation=zero_min_projectile,
+            minimum_uav_separation=zero_min_uav,
+            message="No UAV is threatened; no avoidance is required.",
+        )
 
     # Generate deterministic starting points.
     # This makes validation runs reproducible.
@@ -425,74 +421,98 @@ def plan_avoidance(
         -second_lateral,
     ]
 
-    initial_guesses = [np.zeros((n_uavs, 3))]
+    # Smooth approximation to total Euclidean displacement.
+    epsilon = 1e-6
 
-    # Start with lateral displacements for threatened UAVs.
-    for direction in directions:
-        for scale in [0.5, 1.0]:
-            guess = np.zeros((n_uavs, 3))
+    def optimize(active_indices):
+        """Optimize a subset, returning after the first validated solution."""
+        active_indices = np.asarray(active_indices, dtype=int)
 
-            for i in threatened_indices:
-                guess[i] = (
-                    direction * max_displacement * scale
+        def unpack(x):
+            displacements = np.zeros_like(positions)
+            displacements[active_indices] = np.asarray(x).reshape(-1, 3)
+            return displacements
+
+        def objective(x):
+            lengths = np.linalg.norm(np.asarray(x).reshape(-1, 3), axis=1)
+            return float(np.sum(
+                np.sqrt(lengths**2 + epsilon**2) - epsilon
+            ))
+
+        def speed_constraints(x):
+            return max_displacement - np.linalg.norm(
+                np.asarray(x).reshape(-1, 3), axis=1
+            )
+
+        def separation_constraints(x):
+            projectile_distances, uav_distances = _separation_distances(
+                state,
+                positions,
+                unpack(x),
+                prediction_horizon,
+                maneuver_duration,
+            )
+            return np.concatenate((
+                projectile_distances - projectile_safety_radius,
+                uav_distances - uav_safety_distance,
+            ))
+
+        constraints = [
+            {"type": "ineq", "fun": speed_constraints},
+            {"type": "ineq", "fun": separation_constraints},
+        ]
+        guesses = [np.zeros((len(active_indices), 3))]
+        for direction in directions:
+            for scale in (0.5, 1.0):
+                guesses.append(np.tile(
+                    direction * max_displacement * scale,
+                    (len(active_indices), 1),
+                ))
+        for start_index in range(max(0, num_starts - len(guesses))):
+            guess = np.zeros((len(active_indices), 3))
+            for j in range(len(active_indices)):
+                guess[j] = (
+                    directions[(start_index + j) % len(directions)]
+                    * max_displacement
                 )
+            guesses.append(guess)
 
-            initial_guesses.append(guess)
+        for guess in guesses[:num_starts]:
+            result = minimize(
+                objective,
+                guess.ravel(),
+                method="SLSQP",
+                constraints=constraints,
+                options={
+                    "maxiter": max_iterations,
+                    "ftol": 1e-6,
+                    "disp": False,
+                },
+            )
+            candidate = unpack(result.x)
+            if not np.all(np.isfinite(candidate)):
+                continue
+            valid, min_projectile, min_uav = validate_solution(candidate)
+            if valid:
+                return candidate, min_projectile, min_uav
+        return None
 
-    # Additional deterministic alternating directions.
-    for start_index in range(max(0, num_starts - len(initial_guesses))):
-        guess = np.zeros((n_uavs, 3))
+    # Most encounters threaten only one or two UAVs. Keep every other UAV
+    # fixed first, then retain the original full-swarm search as a fallback.
+    optimized = optimize(threatened_indices or range(n_uavs))
+    if optimized is None and len(threatened_indices) < n_uavs:
+        optimized = optimize(range(n_uavs))
 
-        for j, i in enumerate(threatened_indices):
-            direction = directions[
-                (start_index + j) % len(directions)
-            ]
-
-            guess[i] = direction * max_displacement
-
-        initial_guesses.append(guess)
-
-    initial_guesses = initial_guesses[:num_starts]
-
-    best_displacements = None
-    best_objective = float("inf")
-    best_min_projectile = float("inf")
-    best_min_uav = float("inf")
-
-    for guess in initial_guesses:
-        result = minimize(
-            objective,
-            guess.flatten(),
-            method="SLSQP",
-            constraints=constraints,
-            options={
-                "maxiter": max_iterations,
-                "ftol": 1e-9,
-                "disp": False,
-            },
-        )
-
-        candidate = unpack(result.x)
-
-        if not np.all(np.isfinite(candidate)):
-            continue
-
-        valid, min_projectile, min_uav = (
-            validate_solution(candidate)
-        )
-
-        # Validate constraints directly rather than trusting
-        # the optimizer's success flag alone.
-        if not valid:
-            continue
-
-        candidate_objective = objective(result.x)
-
-        if candidate_objective < best_objective:
-            best_objective = candidate_objective
-            best_displacements = candidate.copy()
-            best_min_projectile = min_projectile
-            best_min_uav = min_uav
+    if optimized is None:
+        best_displacements = None
+        best_min_projectile = float("inf")
+        best_min_uav = float("inf")
+    else:
+        (
+            best_displacements,
+            best_min_projectile,
+            best_min_uav,
+        ) = optimized
 
     if best_displacements is None:
         # Do not return unsafe optimization targets as valid.
