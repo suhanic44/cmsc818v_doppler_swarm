@@ -25,3 +25,15 @@
 ## Comparison
 
 Evaluate Doppler Swarm on the same scenarios using identical physical parameters and common safety, movement, and latency metrics. Report trajectory estimation accuracy separately for Doppler Swarm.
+
+The shared research evaluation now includes `dopplerdodge` as a fourth method:
+
+```powershell
+python -m experiments.main_evaluation --output results/main_02 --reuse-results results/main_01
+```
+
+This reuses saved encounters and existing method rows in a new directory, adds
+the baseline, and leaves the original results unchanged. A fresh run without
+`--reuse-results` collects the expanded metrics for every method. See
+[RESEARCH_EXPERIMENTS.md](../RESEARCH_EXPERIMENTS.md) for metric definitions,
+calibration provenance, and handling of unavailable metrics in older records.

@@ -17,6 +17,7 @@ Run from the repository root:
 """
 
 import argparse
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -378,6 +379,13 @@ class BaselineResult:
     decision_latency: float
     response_delay: float
     maneuvers_before_impact: int
+    predictions: tuple = ()
+    path_lengths: tuple = ()
+    detection_compute_s: float = 0.0
+    response_compute_s: float = 0.0
+    acoustic_generation_s: float = 0.0
+    first_response_time: float | None = None
+    first_motion_time: float | None = None
 
 
 def minimum_distances(uavs, projectile):
@@ -403,20 +411,34 @@ def run_baseline(
     threshold,
     seed=0,
     gui=False,
+    *,
+    projectile_state=None,
+    uav_positions=None,
+    duration=None,
 ):
     """Run one full PyBullet trial with independent UAV decisions."""
-    state = SCENARIOS[scenario]
+    state = np.asarray(SCENARIOS[scenario] if projectile_state is None else projectile_state, dtype=float).copy()
+    positions = np.asarray(UAV_POSITIONS if uav_positions is None else uav_positions, dtype=float).copy()
+    duration = DURATION if duration is None else float(duration)
+    if state.shape != (6,) or not np.all(np.isfinite(state)):
+        raise ValueError("projectile_state must be a finite six-element vector")
+    if positions.ndim != 2 or positions.shape[1] != 3 or len(positions) < 1 or not np.all(np.isfinite(positions)):
+        raise ValueError("uav_positions must be a finite nonempty (N,3) array")
+    if not np.isfinite(duration) or duration < INIT_WINDOW:
+        raise ValueError("duration must cover the observation window")
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("threshold must be finite and nonnegative")
     rng = np.random.default_rng(seed)
 
     world = SimulationWorld(gui=gui, gravity=False)
 
     detectors = [
         StreamingDopplerDodge(threshold)
-        for _ in UAV_POSITIONS
+        for _ in positions
     ]
     controllers = [
         RandomDodgeController(rng)
-        for _ in UAV_POSITIONS
+        for _ in positions
     ]
 
     history_times = []
@@ -432,11 +454,14 @@ def run_baseline(
     min_uav = float("inf")
     path_length = 0.0
     previous_uavs = None
+    path_lengths = np.zeros(len(positions))
+    detection_compute = response_compute = acoustic_compute = 0.0
+    first_motion_time = None
 
     try:
         uav_ids = [
             world.create_uav(position, radius=UAV_RADIUS)
-            for position in UAV_POSITIONS
+            for position in positions
         ]
 
         projectile_id = world.create_projectile(
@@ -447,8 +472,8 @@ def run_baseline(
         )
 
         timestamps = np.append(
-            np.arange(0, DURATION, world.dt),
-            DURATION,
+            np.arange(0, duration, world.dt),
+            duration,
         )
 
         for t in timestamps:
@@ -465,6 +490,10 @@ def run_baseline(
             world.set_uav_positions(uav_ids, new_uavs)
 
             if previous_uavs is not None:
+                increments = np.linalg.norm(new_uavs-previous_uavs,axis=1)
+                path_lengths += increments
+                if first_motion_time is None and np.any(increments > 1e-9):
+                    first_motion_time = t
                 path_length += float(np.sum(
                     np.linalg.norm(
                         new_uavs - previous_uavs,
@@ -503,6 +532,7 @@ def run_baseline(
                     audio_times = sample_indices / SAMPLE_RATE
 
                     for i, detector in enumerate(detectors):
+                        acoustic_start = time.perf_counter()
                         sensor_positions = np.array([
                             positions[i] for positions in uav_history
                         ])
@@ -515,20 +545,25 @@ def run_baseline(
                         )
 
                         detector.add_audio(echo)
+                        acoustic_compute += time.perf_counter()-acoustic_start
 
                     next_audio_index = end_index
 
             # Make one independent decision after the observation window.
             if decisions is None and t >= INIT_WINDOW - 1e-9:
+                decision_start = time.perf_counter()
                 decisions = [
                     detector.decide()
                     for detector in detectors
                 ]
+                detection_compute = time.perf_counter()-decision_start
                 decision_time = t
 
+                response_start = time.perf_counter()
                 for i, prediction in enumerate(decisions):
                     if prediction == "hit":
                         controllers[i].trigger(t, new_uavs[i])
+                response_compute = time.perf_counter()-response_start
 
                 if any(d == "hit" for d in decisions):
                     response_time = t
@@ -553,8 +588,8 @@ def run_baseline(
 
     # Ground-truth labels are used for evaluation only.
     truth = np.array([
-        is_threatened(state, position)
-        for position in UAV_POSITIONS
+        is_threatened(state, position, duration)
+        for position in positions
     ])
 
     predicted_hits = np.array([
@@ -582,7 +617,7 @@ def run_baseline(
             continue
 
         closest_time = (
-            np.dot(UAV_POSITIONS[i] - state[:3], velocity)
+            np.dot(positions[i] - state[:3], velocity)
             / speed_squared
             if speed_squared > 1e-12 else 0.0
         )
@@ -610,7 +645,7 @@ def run_baseline(
         min_projectile_distance=min_projectile,
         min_uav_distance=min_uav,
         total_path_length=path_length,
-        number_moved=int(np.sum(predicted_hits)),
+        number_moved=int(np.count_nonzero(path_lengths > 1e-6)),
         hit_recall=hit_recall,
         false_positive_rate=false_positive_rate,
         decision_latency=decision_time,
@@ -620,6 +655,13 @@ def run_baseline(
             else float("nan")
         ),
         maneuvers_before_impact=maneuvers_before_impact,
+        predictions=tuple(decisions),
+        path_lengths=tuple(float(x) for x in path_lengths),
+        detection_compute_s=detection_compute,
+        response_compute_s=response_compute,
+        acoustic_generation_s=acoustic_compute,
+        first_response_time=response_time,
+        first_motion_time=first_motion_time,
     )
 
 

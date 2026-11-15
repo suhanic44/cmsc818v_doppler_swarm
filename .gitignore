@@ -206,7 +206,7 @@ cython_debug/
 tempCodeRunnerFile.py
 
 # Local experiment datasets
-results/
+# results/
 
 # Ruff stuff:
 .ruff_cache/

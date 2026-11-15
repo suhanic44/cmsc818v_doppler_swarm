@@ -1,6 +1,9 @@
 ## Doppler Swarm: Lightweight Trajectory-Informed Collision Avoidance via Acoustic Sensing for Low-SWaP Multi-UAV Systems
 CMSC818V Term Research Project -- Gili Gordiyenko & Suhani Chaudhary
 
+The main research evaluation and its protocol are in
+[RESEARCH_EXPERIMENTS.md](RESEARCH_EXPERIMENTS.md).
+
 ***Current Project State:***
 
 We've built and tested the full pipeline, from acoustic sensing and trajectory estimation to collision prediction and avoidance. We can now estimate an incoming projectile's trajectory from simulated Doppler measurements and move UAVs to avoid it.
