@@ -1,8 +1,12 @@
 ## Doppler Swarm: Lightweight Trajectory-Informed Collision Avoidance via Acoustic Sensing for Low-SWaP Multi-UAV Systems
 CMSC818V Term Research Project -- Gili Gordiyenko & Suhani Chaudhary
 
-The main research evaluation and its protocol are in
-[RESEARCH_EXPERIMENTS.md](RESEARCH_EXPERIMENTS.md).
+The new spacing-controlled main evaluation is
+[experiments/research_main.py](experiments/research_main.py), documented in
+[MAIN_RESEARCH_PROTOCOL.md](MAIN_RESEARCH_PROTOCOL.md). Supplementary Fibonacci-sphere
+tests use [experiments/fibonacci_evaluation.py](experiments/fibonacci_evaluation.py),
+documented in [FIBONACCI_EXPERIMENT.md](FIBONACCI_EXPERIMENT.md), with saved studies
+in `results/fibonacci_01` and `results/fibonacci_02`.
 
 ***Current Project State:***
 

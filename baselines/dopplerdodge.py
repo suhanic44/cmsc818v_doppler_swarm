@@ -27,7 +27,6 @@ from simulation.world import SimulationWorld
 from simulation.acoustic_sensor import (
     SAMPLE_RATE,
     _echo_from_history,
-    generate_trajectory_echo,
 )
 from experiments.online_avoidance import (
     UAV_POSITIONS,
@@ -53,6 +52,35 @@ SCENARIOS = {
 BUFFER_MS = 10.0
 MIN_RMS = 0.05
 CALIBRATION_SEED = 42
+CARRIER_FREQUENCY = 18000.0  # Near-ultrasound configuration evaluated in Section 3.
+
+
+def dodge_echo_from_history(audio_times, physics_times, projectile_positions, sensor_positions):
+    """Paper carrier; tolerate roundoff at causal chunk endpoints (not future data)."""
+    return _echo_from_history(
+        audio_times, physics_times, projectile_positions, sensor_positions,
+        carrier_frequency=CARRIER_FREQUENCY, time_tolerance=1e-12,
+    )
+
+
+def generate_dodge_echo(audio_times, physics_times, projectile_positions, sensor_position):
+    sensors = np.broadcast_to(np.asarray(sensor_position), (len(physics_times), 3))
+    return dodge_echo_from_history(audio_times, physics_times, projectile_positions, sensors)
+
+
+def select_hit_threshold(scores, labels):
+    """Smallest threshold covering every training HIT, as prioritized in Section 3.
+
+    This is our explicit calibration rule; the paper does not publish a numeric
+    threshold or a threshold-search procedure. Test recall is not guaranteed.
+    """
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=bool)
+    if scores.shape != labels.shape or not labels.any() or labels.all():
+        raise ValueError("Calibration requires both HIT and MISS examples")
+    if not np.all(np.isfinite(scores[labels])):
+        raise ValueError("A training HIT has no usable echo; cannot calibrate zero false negatives")
+    return float(np.nextafter(np.max(scores[labels]), np.inf))
 
 
 # ------------------------------------------------------------
@@ -109,7 +137,11 @@ def analyze_echo(
     if not len(active_indices):
         raise ValueError("No reflected signal above min_rms")
 
-    start = int(active_indices[0])
+    # The onset buffer can contain silence followed by a partial echo. Its
+    # changing occupancy is not Doppler drift. Allow one complete buffer to
+    # settle before applying Section 2.5's unchanged product/sum/difference rule.
+    # This startup guard is an implementation choice, not specified by the paper.
+    start = int(active_indices[0]) + 1
     end = start
 
     while end < n_buffers and rms[end] >= min_rms:
@@ -237,7 +269,7 @@ def calibration_states(count, seed=CALIBRATION_SEED):
 
 
 def calibrate_threshold(count=50, seed=CALIBRATION_SEED):
-    """Choose a threshold maximizing balanced HIT/MISS accuracy."""
+    """Choose the smallest threshold with no missed usable training HITs."""
     scores = []
     labels = []
 
@@ -251,7 +283,7 @@ def calibrate_threshold(count=50, seed=CALIBRATION_SEED):
         )
 
         for uav_position in UAV_POSITIONS:
-            echo = generate_trajectory_echo(
+            echo = generate_dodge_echo(
                 audio_times,
                 physics_times,
                 projectile_positions,
@@ -260,14 +292,16 @@ def calibrate_threshold(count=50, seed=CALIBRATION_SEED):
 
             try:
                 result = analyze_echo(echo)
+                score = result.score
             except ValueError as exc:
                 if "No reflected signal" in str(exc) or (
                     "three consecutive active" in str(exc)
                 ):
-                    continue
-                raise
+                    score = float("inf")
+                else:
+                    raise
 
-            scores.append(result.score)
+            scores.append(score)
             labels.append(is_threatened(state, uav_position))
 
     scores = np.asarray(scores)
@@ -278,37 +312,9 @@ def calibrate_threshold(count=50, seed=CALIBRATION_SEED):
             "Calibration requires both HIT and MISS examples."
         )
 
-    # Evaluate every possible threshold between observed scores.
-    unique_scores = np.unique(scores)
-    candidates = np.r_[
-        0.0,
-        (unique_scores[:-1] + unique_scores[1:]) / 2,
-        unique_scores[-1] + 1.0,
-    ]
-
-    best_threshold = 0.0
-    best_accuracy = -1.0
-    best_recall = -1.0
-
-    for threshold in candidates:
-        predicted = scores <= threshold
-
-        recall = np.mean(predicted[labels])
-        specificity = np.mean(~predicted[~labels])
-        balanced_accuracy = (recall + specificity) / 2
-
-        if (
-            balanced_accuracy > best_accuracy + 1e-12
-            or (
-                abs(balanced_accuracy - best_accuracy) <= 1e-12
-                and recall > best_recall
-            )
-        ):
-            best_threshold = float(threshold)
-            best_accuracy = float(balanced_accuracy)
-            best_recall = float(recall)
-
+    best_threshold = select_hit_threshold(scores, labels)
     predicted = scores <= best_threshold
+    best_accuracy = (np.mean(predicted[labels]) + np.mean(~predicted[~labels])) / 2
 
     print("\nTHRESHOLD CALIBRATION")
     print(f"Trajectories:       {count}")
@@ -537,7 +543,7 @@ def run_baseline(
                             positions[i] for positions in uav_history
                         ])
 
-                        echo = _echo_from_history(
+                        echo = dodge_echo_from_history(
                             audio_times,
                             np.asarray(history_times),
                             np.asarray(projectile_history),

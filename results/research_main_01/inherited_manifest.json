@@ -1,0 +1,207 @@
+{
+  "config": {
+    "version": 1,
+    "sizes": [
+      4,
+      6,
+      8,
+      10,
+      16,
+      25
+    ],
+    "speeds": [
+      1.0,
+      3.0,
+      5.0
+    ],
+    "methods": [
+      "static",
+      "oracle",
+      "estimate",
+      "dopplerdodge",
+      "dopplerdodge_coordinated"
+    ],
+    "categories": [
+      "direct_threat",
+      "grazing_threat",
+      "multiple_threats",
+      "safe_miss"
+    ],
+    "repetitions": 50,
+    "spacing_m": 0.6,
+    "min_spacing_m": 0.3,
+    "warning_s": 1.2,
+    "trial_timeout_s": 60,
+    "seed": 8675309,
+    "calibration_seed": 2026,
+    "calibration_repetitions": 2,
+    "requested_threshold": null,
+    "added_noise": false
+  },
+  "fingerprint": {
+    "source_hashes": {
+      "baselines\\dopplerdodge.py": "71f11dd7b7eac9d57a13cba348a4281a6f11a28561e2506adc72390773dafc9f",
+      "baselines\\dopplerdodge_coordinated.py": "4f325feeb1970837c90ab157f36dff72cffbf238e65335ee15c8a251844521b9",
+      "estimation\\batch_estimator.py": "78d2d45ef3758853a428ea0eef6fa51a174f4f31d060525f32b973ac853f9fb3",
+      "estimation\\ekf.py": "78c36baafb3878aa7b9c7ad11338829fabbed82c18f2355ed1d8b5d527e82435",
+      "experiments\\execute_avoidance.py": "9ee48323480e935a4d27f5422213c5940dd777a2fa0d1f18dac1327ea1a0da17",
+      "experiments\\main_evaluation.py": "c36c5f6c944262f5bf788176b4178dd703de23cfdd601fd5e61e30b7cf6d05de",
+      "experiments\\multi_uav_estimation.py": "69851db700141acec6b3e1f1b2158e6b81c58970c89399a59e507f123adc2a30",
+      "experiments\\noise_robustness.py": "f01328bc6876cdf5b280de43cbb623e1e11cfef5a58d54929f6384d8b792de3f",
+      "experiments\\online_avoidance.py": "2a12b7c864f1cdc3787c0557d85de69b6810de43d18680717bfb083601c5af76",
+      "experiments\\online_estimation.py": "c674a8ff8e2b0d8b2e0612f4edcbeb025090d49229de1f1a9575d59cc31938aa",
+      "experiments\\research_main.py": "09d1754018efa6357c5741a8f2f71ba8ae523730a7f792e6f317918db66a2a61",
+      "experiments\\research_supplements.py": "6bd0d0435fc4d552d02266a53f22503ee438b03b77c082e02676462b3360449c",
+      "experiments\\single_uav.py": "3efbfc42c7ef07c5c6e22167ab5ed806efd339a967d371dc7a1bc57066fb00df",
+      "experiments\\validate_avoidance_execution.py": "eb72850db5638ec3cec7ae591cc5065ebeafe3b5eb160a250a294a77c2deae29",
+      "experiments\\validate_avoidance_planning.py": "adef6eaddc4feba4ef57fb962ee60dbba3ca04716f46f2cb0a808b335a32b3bd",
+      "experiments\\validate_collision_prediction.py": "7d7404d33c32c841aee2da31c061d99482a695256c6430c29de351721169d400",
+      "experiments\\validate_moving_acoustics.py": "41422f789e183ad3c6663f1415424c6115bc204c7f0e23e5ee89ea32fcae6bda",
+      "experiments\\validate_online_avoidance.py": "100effdeab8b30e7758e85f1bcd5f95376241610ca49efe37be51893b7b22b6d",
+      "experiments\\validate_online_estimation.py": "0a525a44274ad4afbdacea1f60c2de5be539fb639304c70e3ae45fda1a9aeb28",
+      "experiments\\validate_streaming_acoustics.py": "1ff2760b00fd9062a968a3d4fbd49a569c0889c4076d710caee7fe7f5cef93b0",
+      "planning\\__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "planning\\avoidance_planner.py": "529d83a7e4b13daa17b6e73f20ec8ad4d17f3bd6b9b3775b623fb49efadc2213",
+      "planning\\collision_predictor.py": "a08f0e2c91b83612d78d1ec7b38ef8c3ef879376e487a770e9a3591518288d69",
+      "requirements.txt": "01b56de77437d3e5e39afd987fd3449917ec3489a8916c01276029fef86eb577",
+      "simulation\\__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "simulation\\acoustic_sensor.py": "d41cdd0a39ca88dc4ee346f8ee96b503c6e6478a6337ebb91cb9b71db6a88ef9",
+      "simulation\\doppler.py": "6caba0749761c41187976947558ad2afd70f59fb6b5cccf1532c775f3a24614e",
+      "simulation\\world.py": "57409fc61c53fdf70ba77b30d90c576fe36442a0007e40fae990a60bb88afd09"
+    },
+    "environment": {
+      "python": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+      "platform": "Windows-10-10.0.26200-SP0",
+      "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+      "packages": [
+        [
+          "Deprecated",
+          "1.3.1"
+        ],
+        [
+          "beartype",
+          "0.22.9"
+        ],
+        [
+          "cachebox",
+          "5.2.3"
+        ],
+        [
+          "colorama",
+          "0.4.6"
+        ],
+        [
+          "contourpy",
+          "1.3.3"
+        ],
+        [
+          "cycler",
+          "0.12.1"
+        ],
+        [
+          "deepdiff",
+          "9.1.0"
+        ],
+        [
+          "fonttools",
+          "4.67.0"
+        ],
+        [
+          "h5py",
+          "3.16.0"
+        ],
+        [
+          "jaxtyping",
+          "0.3.7"
+        ],
+        [
+          "k-Wave-python",
+          "0.6.3rc1"
+        ],
+        [
+          "kiwisolver",
+          "1.5.1"
+        ],
+        [
+          "matplotlib",
+          "3.10.9"
+        ],
+        [
+          "numpy",
+          "2.2.6"
+        ],
+        [
+          "opencv-python",
+          "4.13.0.92"
+        ],
+        [
+          "orderly-set",
+          "5.5.0"
+        ],
+        [
+          "packaging",
+          "26.3"
+        ],
+        [
+          "pillow",
+          "13.0.0"
+        ],
+        [
+          "pip",
+          "26.2.2"
+        ],
+        [
+          "pybullet-arm64",
+          "3.2.8"
+        ],
+        [
+          "pyparsing",
+          "3.3.3"
+        ],
+        [
+          "python-dateutil",
+          "2.9.0.post0"
+        ],
+        [
+          "scipy",
+          "1.15.3"
+        ],
+        [
+          "setuptools",
+          "65.5.0"
+        ],
+        [
+          "six",
+          "1.17.0"
+        ],
+        [
+          "tqdm",
+          "4.70.1"
+        ],
+        [
+          "wadler_lindig",
+          "0.1.7"
+        ],
+        [
+          "wrapt",
+          "2.5.1"
+        ]
+      ]
+    }
+  },
+  "dopplerdodge_threshold": 6.414420147950617,
+  "calibration": {
+    "balanced_accuracy": 0.5927563868489742,
+    "hit_recall": 0.30612244897959184,
+    "false_positive_rate": 0.12060967528164347,
+    "samples": 1656,
+    "threatened_samples": 147,
+    "nonthreatened_samples": 1509,
+    "no_signal_samples": 0
+  },
+  "planned_trials": 18000,
+  "input_hashes": {
+    "encounters.jsonl": "f43b58a42cef73a42a6a7b94b78db398c79f911e22135760df31e53c8956e97a",
+    "calibration_encounters.jsonl": "f4b26effdeb9cc16db258cfba3d3835dd870b5f487c8b3894f633e9f8738ecf7"
+  }
+}

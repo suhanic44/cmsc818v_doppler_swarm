@@ -16,13 +16,13 @@ directory for execution; their saved results can still be summarized.
 From the directory containing this file:
 
 ```powershell
-.venv\Scripts\python.exe -m experiments.noise_robustness --source results/main_02 --output results/noise_fixed --filter-policy fixed
+.venv\Scripts\python.exe -m experiments.noise_robustness --source results/fibonacci_02 --output results/noise_fixed --filter-policy fixed
 ```
 
 Run variance-aware separately on matching encounters and noise realizations:
 
 ```powershell
-.venv\Scripts\python.exe -m experiments.noise_robustness --source results/main_02 --output results/noise_variance_aware --filter-policy variance_aware
+.venv\Scripts\python.exe -m experiments.noise_robustness --source results/fibonacci_02 --output results/noise_variance_aware --filter-policy variance_aware
 ```
 
 Or run both together with `--filter-policy both` and a new output directory.

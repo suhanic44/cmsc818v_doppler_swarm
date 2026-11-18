@@ -45,7 +45,8 @@ def _positions_at(query_times, history_times, history_positions):
 
 
 def _echo_from_history(
-    audio_times, physics_times, projectile_positions, sensor_positions, amplitude=0.5
+    audio_times, physics_times, projectile_positions, sensor_positions, amplitude=0.5,
+    *, carrier_frequency=SPEAKER_FREQUENCY, time_tolerance=0.0,
 ):
     """Echo phase is the source phase at the retarded emission time.
 
@@ -82,11 +83,11 @@ def _echo_from_history(
     valid = (
         (emission_times >= physics_times[0])
         & (reflection_times >= physics_times[0])
-        & (reflection_times <= physics_times[-1])
-        & (audio_times <= physics_times[-1])
+        & (reflection_times <= physics_times[-1] + time_tolerance)
+        & (audio_times <= physics_times[-1] + time_tolerance)
     )
     echo[valid] = amplitude * np.sin(
-        2 * np.pi * SPEAKER_FREQUENCY * emission_times[valid]
+        2 * np.pi * carrier_frequency * emission_times[valid]
     )
     return echo
 

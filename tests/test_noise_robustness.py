@@ -16,6 +16,7 @@ from unittest.mock import patch
 import numpy as np
 
 from experiments import noise_robustness as study
+from experiments.fibonacci_evaluation import encounters as fibonacci_encounters
 
 
 class NoiseTests(unittest.TestCase):
@@ -132,7 +133,7 @@ class NoiseTests(unittest.TestCase):
             root=Path(temporary)
             source=root/"source"
             source.mkdir()
-            study.write_jsonl(source/"encounters.jsonl",list(study.main.encounters(314159,1)))
+            study.write_jsonl(source/"encounters.jsonl",list(fibonacci_encounters(314159,1)))
             study.write_json(source/"manifest.json",dict(
                 source_hashes=study.main.source_hashes(),environment=study.fingerprint()["environment"],
                 encounters_sha256=study.hashlib.sha256((source/"encounters.jsonl").read_bytes()).hexdigest()))
@@ -161,7 +162,7 @@ class NoiseTests(unittest.TestCase):
             root = Path(temporary)
             source = root/"source"
             source.mkdir()
-            cases = list(study.main.encounters(314159,2))
+            cases = list(fibonacci_encounters(314159,2))
             study.write_jsonl(source/"encounters.jsonl",cases)
             parent = dict(source_hashes=study.main.source_hashes(),environment=study.fingerprint()["environment"],
                           encounters_sha256=study.hashlib.sha256((source/"encounters.jsonl").read_bytes()).hexdigest())

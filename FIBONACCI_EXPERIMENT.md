@@ -1,20 +1,30 @@
-# Experiment 1: end-to-end safety versus swarm size and projectile speed
+# Supplementary experiment: Fibonacci-sphere formations
 
 Research question: how often does acoustic trajectory estimation enable safe
 coordinated avoidance, relative to the same planner with perfect projectile state?
 
-This is the main research evaluation, not a sequence of small validation cases.
-It does not replace your existing component correctness checks.
+This supplementary study fixes UAV positions on a centered Fibonacci sphere.
+It evaluates safety across swarm size and projectile speed for that formation
+family. The primary evaluation uses randomized volumetric formations at controlled
+spacing; see [MAIN_RESEARCH_PROTOCOL.md](MAIN_RESEARCH_PROTOCOL.md).
+
+The earlier `results/main_01` and `results/main_02` directories are now named
+`results/fibonacci_01` and `results/fibonacci_02`. Their contents, manifests,
+source snapshots and measurement values are unchanged. Historical provenance may
+still use the original names. Use `experiments.fibonacci_evaluation` to run or
+summarize this supplementary study. Shared metrics and controller instrumentation
+live in `experiments/evaluation_common.py`; the primary research runner imports
+those utilities independently.
 
 ## Run and read
 
 From this directory:
 
 ```powershell
-.venv\Scripts\python.exe -m experiments.main_evaluation --output results/main_01
+.venv\Scripts\python.exe -m experiments.fibonacci_evaluation --output results/fibonacci_03
 ```
 
-The full experiment runs 2,400 encounters, each with four methods (9,600 method
+The full experiment runs 2,400 encounters, each with five methods (12,000 method
 trials, including the inexpensive analytic static baseline). It can take hours;
 the duration depends on initialization/planner difficulty and your computer.
 No full evaluation is launched automatically when developing the runner.
@@ -22,7 +32,7 @@ No full evaluation is launched automatically when developing the runner.
 Every completed method trial is saved immediately. To continue an interrupted run:
 
 ```powershell
-.venv\Scripts\python.exe -m experiments.main_evaluation --output results/main_01 --resume
+.venv\Scripts\python.exe -m experiments.fibonacci_evaluation --output results/fibonacci_03 --resume
 ```
 
 Resume skips saved trials, including recorded errors. It rejects changed source,
@@ -30,31 +40,35 @@ configuration, environment, or encounter data. A truncated JSONL line after a
 hard shutdown produces a parsing error rather than silently discarding evidence.
 Only one process should write to an output directory.
 
-Version 2 adds Doppler Dodge and additional instrumentation. To add the baseline
-to an existing version-1 study without rerunning its saved methods:
+Version 3 adds coordinated Doppler Dodge. To add it to a previous four-method
+study without rerunning compatible saved methods:
 
 ```powershell
-.venv\Scripts\python.exe -m experiments.main_evaluation --output results/main_02 --reuse-results results/main_01
+.venv\Scripts\python.exe -m experiments.fibonacci_evaluation --output results/fibonacci_03 --reuse-results results/fibonacci_02
 ```
 
-The source directory is read only. Saved static/oracle/estimate rows are imported
-with provenance; missing rows are executed. All Doppler Dodge trials are new.
+The source directory is read only. Saved static/oracle/estimate/independent-Doppler
+Dodge rows are imported with provenance; missing rows are executed. A complete
+four-method study needs only 2,400 new coordinated-baseline trials. Three-method
+version-1 studies can also be imported, adding both Dodge variants.
 Controllers, encounter settings and environment must match the source study;
 the changed reporting/instrumentation runner is allowed. Calibration/threshold
-settings are saved in the new manifest. Resume the new directory using `--resume`
-without `--reuse-results`. An old directory cannot be resumed as version 2 in place.
+settings are saved in the new manifest. Existing thresholds are inherited without
+recalibration, and a conflicting explicit threshold is rejected. Resume the new
+directory using `--resume` without `--reuse-results`. Old studies cannot be
+expanded in place under a newer protocol.
 
 Old records do not contain per-UAV motion or first HIT/MISS decisions. Their new
 metrics remain unavailable, not guessed from final displacement or first successful
 command time. For the full new metric set on every method, run a fresh directory
-without `--reuse-results` (all 9,600 trials). The imported-study report uses the
-correct four-method denominator; analyzing an unchanged old study still uses three.
+without `--reuse-results` (all 12,000 trials). Report denominators follow the saved
+manifest; unchanged older studies retain their three/four-method counts.
 
 Summaries are generated at completion or Ctrl+C. You can regenerate them without
 running simulations:
 
 ```powershell
-.venv\Scripts\python.exe -m experiments.main_evaluation --output results/main_01 --summarize
+.venv\Scripts\python.exe -m experiments.fibonacci_evaluation --output results/fibonacci_03 --summarize
 ```
 
 * `report.md`: readable safety rates, intervals, and error counts, with encounter
@@ -126,6 +140,14 @@ not an estimate of real-world encounter prevalence.
   partner's cumulative-drift detector, then performs one seeded random 3D dodge
   if classified HIT. Uses the identical saved starting geometry, projectile
   state, duration, UAV speed and maneuver duration. No EKF, SQP, or shared sensing.
+* `dopplerdodge_coordinated`: same detector, threshold, observation window and
+  random seed as independent Doppler Dodge. Random preferred HIT movements are
+  jointly adjusted by the partner's SLSQP planner to maintain UAV-UAV clearance.
+  Its planner receives only HIT/MISS, UAV positions and a random generator,
+  never projectile state. It does not constrain clearance from the unknown
+  projectile trajectory. MISS UAVs may move to accommodate others. Its native
+  minimum HIT movement remains 0.40 m (maximum 0.45 m), while independent Dodge
+  commands 0.45 m; this compares implemented policies, not coordination alone.
 
 Oracle is a privileged reference, not a mathematical upper bound or a globally
 optimal trajectory. Its difference from estimate includes startup and update
@@ -143,6 +165,11 @@ Declare settings before final evaluation, not after inspecting test outcomes.
 The random-dodge seed is derived deterministically from study seed and encounter
 ID, stored on each result row. There is one random dodge realization per encounter,
 not multiple action-seed repetitions. Separate encounters provide action variation.
+
+Coordinated Dodge also records `coordinated_plan_success` and `reactive_uavs_moved`
+(MISS-classified UAVs that actually move). Failed coordinated plans are not
+executed: UAVs stay stationary and the encounter is still scored. Classifications
+are retained even if planning fails. Native named-scenario baseline CLIs still work.
 
 Primary outcome: **safety clearance satisfied throughout the recorded simulation**.
 Projectile contact (0.07 m) and UAV contact (0.10 m) are recorded separately from

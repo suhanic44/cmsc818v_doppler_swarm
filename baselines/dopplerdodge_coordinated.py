@@ -12,6 +12,7 @@ Run:
 """
 
 import argparse
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,7 +20,7 @@ import pybullet as p
 from scipy.optimize import minimize
 
 from simulation.world import SimulationWorld
-from simulation.acoustic_sensor import SAMPLE_RATE, _echo_from_history
+from simulation.acoustic_sensor import SAMPLE_RATE
 from experiments.online_avoidance import (
     UAV_POSITIONS,
     UAV_RADIUS,
@@ -39,6 +40,7 @@ from baselines.dopplerdodge import (
     calibrate_threshold,
     is_threatened,
     minimum_distances,
+    dodge_echo_from_history,
     print_summary,
 )
 
@@ -279,21 +281,35 @@ def run_coordinated_baseline(
     seed=0,
     gui=False,
     min_hit_movement=0.40,
+    *,
+    projectile_state=None,
+    uav_positions=None,
+    duration=None,
 ):
     """Evaluate DopplerDodge with joint UAV-aware planning."""
-    state = SCENARIOS[scenario]
+    state = np.asarray(SCENARIOS[scenario] if projectile_state is None else projectile_state,dtype=float).copy()
+    positions = np.asarray(UAV_POSITIONS if uav_positions is None else uav_positions,dtype=float).copy()
+    duration = DURATION if duration is None else float(duration)
+    if state.shape != (6,) or not np.all(np.isfinite(state)):
+        raise ValueError("projectile_state must be a finite six-element vector")
+    if positions.ndim != 2 or positions.shape[1] != 3 or len(positions)<1 or not np.all(np.isfinite(positions)):
+        raise ValueError("uav_positions must be a finite nonempty (N,3) array")
+    if not np.isfinite(duration) or duration<INIT_WINDOW:
+        raise ValueError("duration must cover the observation window")
+    if not np.isfinite(threshold) or threshold<0:
+        raise ValueError("threshold must be finite and nonnegative")
     rng = np.random.default_rng(seed)
 
     world = SimulationWorld(gui=gui, gravity=False)
 
     detectors = [
         StreamingDopplerDodge(threshold)
-        for _ in UAV_POSITIONS
+        for _ in positions
     ]
 
     controllers = [
         RandomDodgeController(rng)
-        for _ in UAV_POSITIONS
+        for _ in positions
     ]
 
     history_times = []
@@ -310,11 +326,14 @@ def run_coordinated_baseline(
     min_uav = float("inf")
     path_length = 0.0
     previous_uavs = None
+    path_lengths = np.zeros(len(positions))
+    first_motion_time = None
+    detection_compute = response_compute = acoustic_compute = 0.0
 
     try:
         uav_ids = [
             world.create_uav(position, radius=UAV_RADIUS)
-            for position in UAV_POSITIONS
+            for position in positions
         ]
 
         projectile_id = world.create_projectile(
@@ -325,8 +344,8 @@ def run_coordinated_baseline(
         )
 
         timestamps = np.append(
-            np.arange(0, DURATION, world.dt),
-            DURATION,
+            np.arange(0, duration, world.dt),
+            duration,
         )
 
         for t in timestamps:
@@ -343,6 +362,10 @@ def run_coordinated_baseline(
             world.set_uav_positions(uav_ids, new_uavs)
 
             if previous_uavs is not None:
+                increments = np.linalg.norm(new_uavs-previous_uavs,axis=1)
+                path_lengths += increments
+                if first_motion_time is None and np.any(increments>1e-9):
+                    first_motion_time = t
                 path_length += float(np.sum(
                     np.linalg.norm(
                         new_uavs - previous_uavs,
@@ -381,11 +404,12 @@ def run_coordinated_baseline(
                     )
 
                     for i, detector in enumerate(detectors):
+                        acoustic_start = time.perf_counter()
                         sensor_positions = (
                             np.asarray(uav_history)[:, i, :]
                         )
 
-                        echo = _echo_from_history(
+                        echo = dodge_echo_from_history(
                             audio_times,
                             np.asarray(history_times),
                             np.asarray(projectile_history),
@@ -393,15 +417,18 @@ def run_coordinated_baseline(
                         )
 
                         detector.add_audio(echo)
+                        acoustic_compute += time.perf_counter()-acoustic_start
 
                     next_audio_index = end_index
 
             # Single synchronized avoidance decision.
             if decisions is None and t >= INIT_WINDOW - 1e-9:
+                detection_start = time.perf_counter()
                 decisions = [
                     detector.decide()
                     for detector in detectors
                 ]
+                detection_compute = time.perf_counter()-detection_start
 
                 decision_time = t
 
@@ -413,6 +440,7 @@ def run_coordinated_baseline(
                 # CRITICAL:
                 # Planner gets HIT/MISS and UAV positions only.
                 # It does not receive projectile state.
+                response_start = time.perf_counter()
                 plan = plan_coordinated(
                     predicted_hits,
                     new_uavs,
@@ -436,6 +464,7 @@ def run_coordinated_baseline(
                         ) > 1e-4
                     ):
                         response_time = t
+                response_compute = time.perf_counter()-response_start
 
             # Same evaluation distances as original baseline.
             projectile_dist, uav_dist = minimum_distances(
@@ -458,8 +487,8 @@ def run_coordinated_baseline(
 
     # Ground truth is used ONLY for evaluation.
     truth = np.array([
-        is_threatened(state, position)
-        for position in UAV_POSITIONS
+        is_threatened(state, position,duration)
+        for position in positions
     ])
 
     predicted_hits = np.array([
@@ -489,7 +518,7 @@ def run_coordinated_baseline(
 
         if speed_squared > 1e-12:
             closest_time = float(
-                (UAV_POSITIONS[i] - state[:3]) @ velocity
+                (positions[i] - state[:3]) @ velocity
                 / speed_squared
             )
         else:
@@ -518,10 +547,7 @@ def run_coordinated_baseline(
         min_projectile_distance=min_projectile,
         min_uav_distance=min_uav,
         total_path_length=path_length,
-        number_moved=int(sum(
-            controller.start_time is not None
-            for controller in controllers
-        )),
+        number_moved=int(np.count_nonzero(path_lengths>1e-6)),
         hit_recall=hit_recall,
         false_positive_rate=false_positive_rate,
         decision_latency=decision_time,
@@ -531,10 +557,14 @@ def run_coordinated_baseline(
             else float("nan")
         ),
         maneuvers_before_impact=maneuvers_before_impact,
+        predictions=tuple(decisions),path_lengths=tuple(float(x) for x in path_lengths),
+        detection_compute_s=detection_compute,response_compute_s=response_compute,
+        acoustic_generation_s=acoustic_compute,first_response_time=response_time,
+        first_motion_time=first_motion_time,
     )
 
     reactive_moves = sum(
-        controller.start_time is not None
+        path_lengths[i]>1e-6
         and not predicted_hits[i]
         for i, controller in enumerate(controllers)
     )

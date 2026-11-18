@@ -1,6 +1,6 @@
 """Research noise study; see NOISE_EXPERIMENT.md for the fixed protocol.
 
-python -m experiments.noise_robustness --source results/main_02 --output results/noise_fixed --filter-policy fixed
+python -m experiments.noise_robustness --source results/fibonacci_02 --output results/noise_fixed --filter-policy fixed
 Use --resume to continue, or --summarize to analyze saved trials only.
 """
 
@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from experiments import main_evaluation as main
+from experiments import evaluation_common as main
 
 
 SIGMAS = (0.5, 1.0, 2.0, 4.0, 8.0)  # Additional measurement-error standard deviation, Hz.
@@ -460,7 +460,7 @@ def plot_results(output, summaries, checkpoints, sizes=SWARM_SIZES, policies=POL
 
 def main_cli():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=Path("results/main_02"))
+    parser.add_argument("--source", type=Path, default=Path("results/fibonacci_02"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=161803)
     parser.add_argument("--realizations", type=int, default=5)
